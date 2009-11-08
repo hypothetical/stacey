@@ -268,6 +268,7 @@ Class Page {
 		
 	}
 	function debug() {
+		$html = '';
 		$html .= '<p>Type: '.$this->get_page_type().'</p>';
 		$html .= '<p>Path: '.$this->path.' | '.$this->link_path.'</p>';
 		$html .= '<p>Template: '.$this->template_file.'</p>';
