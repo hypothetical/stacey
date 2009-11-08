@@ -216,7 +216,7 @@ Class Page {
 	var $html_files = array();
 	var $swf_files = array();
 	
-	var $default_template = 'content';
+	var $default_template;
 
 	var $path;
 	var $link_path;
