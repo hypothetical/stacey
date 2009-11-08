@@ -70,6 +70,10 @@ Class Helpers {
 		return false;
 	}
 	
+	static function path_to_url($dir) {
+		return preg_replace(array('/\d+?\./', '/..\/content\//'), '', $dir);
+	}
+	
 }
 
 Class Cache {
@@ -134,29 +138,26 @@ Class Renderer {
 	
 	function __construct($get) {
 		// take the passed url ($get) and turn it into an object
-		$this->page = $this->handle_routes($get);
+		$this->page = $this->handle_routes(key($get));
 	}
 	
-	function handle_routes($get) {
-		// if key is empty, we're looking for the index page
-		if(key($get) == '') {
-			// creating a new page without passing through a name creates the index page
-			return new Page();
-		}
-		// if key does contain slashes, it must be a category/page
-		else if(preg_match('/\//', key($get))) {
-			// explode key, [0] => category, [1] => name
-			$path = explode('/', key($get));
-			// if key contains more than one /, return a 404 as the app doesn't handle more than 2 levels of depth
-			if(count($path) > 2) return key($get);
-			else return new PageInCategory($path[1], $path[0]);
+	function handle_routes($path) {
+		
+		// if path is empty, we're looking for the index page
+		if($path == '') { $path = 'index'; }
+
+		// if key does contain slashes, it must be a page within a category
+		else if(preg_match('/\//', $path)) {
+			return new PageInCategory($path);
 		}
 		// if key contains no slashes, it must be a page or a category
-		else {
-			// check whether we're looking for a category or a page
-			if(Helpers::is_category(key($get))) return new Category(key($get));
-			else return new Page(key($get));
+		else if(Helpers::is_category($path)) {
+			return new Category($path);
 		}
+		
+		return new Page($path);
+		
+		
 	}
 	
 	function render_404() {
@@ -209,36 +210,39 @@ Class Renderer {
 
 Class Page {
 	var $name;
-	var $name_unclean;
 
-	var $category;
-	var $category_unclean;
+	var $parent_url;
 	
 	var $content_file;
 	var $template_file;
 	var $public_file;
 	
-	var $i;
-	var $unclean_names = array();
 	var $image_files = array();
 	var $video_files = array();
 	var $html_files = array();
 	var $swf_files = array();
-	var $sibling_pages;
-	
-	var $link_path;
-	var $content_path;
 	
 	var $default_template = 'content';
+
+	var $path;
+	var $link_path;
 	
-	function __construct($name = 'index', $category = '') {
-		$this->category = $category;
-		$this->category_unclean = ($category == '') ? false : $this->unclean_name($this->category,'../content/');
-		$this->content_path = ($category == '') ? '../content/' : '../content/'.$this->category_unclean.'/';
+	var $children;
+	var $siblings;
+	var $position;
+	var $page_type;
+	var $sibling_pages; 
+	var $url;
+	
+	function __construct($url = 'index') {	
+		// parse the url /$parent_url/$name
+		preg_match("/^((.*)\/)?([^\/]*$)/", $url, $url_matches);
+		$this->url = $url;
+		$this->parent_url = $url_matches[2];
+		$this->name = $url_matches[3];
 		
-		$this->name = $name;
-		$this->name_unclean = $this->unclean_name($this->name, $this->content_path);
-		$this->unclean_names = Helpers::list_files($this->content_path, '/.*/', true);
+		$this->path = $this->get_path();
+		$this->link_path = $this->construct_link_path();
 		
 		$this->content_file = $this->get_content_file();
 		$this->template_file = $this->get_template_file($this->default_template);
@@ -247,20 +251,38 @@ Class Page {
 		$this->video_files = $this->get_assets('/\.(mov|mp4)/i');
 		$this->html_files = $this->get_assets('/\.(html|htm)/i');
 		$this->swf_files = $this->get_assets('/\.swf/i');
-		$this->link_path = $this->construct_link_path();
+						
+		$this->siblings = Helpers::list_files($this->path.'/../', '/.*/', true);
 		
-		$this->sibling_pages = $this->get_sibling_pages();
-	}
-	
-	function construct_link_path() {
-		$link_path = '';
-		if(!preg_match('/index/', $this->content_file)) {
-			$link_path .= '../';
-			preg_match_all('/\//', $this->content_file, $slashes);
-			for($i = 3; $i < count($slashes[0]); $i++) $link_path .= '../';
+		// Save the position of the page within its siblings 
+		foreach($this->siblings as $key => $file) {
+			if(preg_match('/^\d+?\.'.$this->name.'$/', $file)) {
+				$this->position = $key;
+				break;
+			}
 		}
-		return $link_path;
+		
+		$this->children = Helpers::list_files($this->path, '/.*/', true);
+
+		$this->sibling_pages = $this->get_sibling_pages();
+		
 	}
+	function debug() {
+		$html .= '<p>Type: '.$this->get_page_type().'</p>';
+		$html .= '<p>Path: '.$this->path.' | '.$this->link_path.'</p>';
+		$html .= '<p>Template: '.$this->template_file.'</p>';
+		$html .= '<p>Name: '.$this->name.'<p>';
+		$html .= '<p>Parent: <a href="'.$this->link_path.$this->parent_url.'">'.$this->parent_url.'</a></p>';
+		
+		$html .= "<p>URL: ".$this->url."</p>";
+		foreach($this->children as $a) {
+			$html .= '<p>C: '.$a.'</p>';
+		}
+		foreach($this->siblings as $n) { $html .= '<p>'.$n.'</p>'; }
+		
+		return $html;
+	}
+
 	
 	function clean_name($name) {
 		// strip leading digit and dot from filename (1.xx becomes xx)
@@ -268,21 +290,13 @@ Class Page {
 	}
 	
 	function unclean_name($name, $dir) {
-		// loop through each unclean page name looking for a match for $name
-		foreach(Helpers::list_files($dir, '/.*/', true) as $key => $file) {
-			if(preg_match('/'.$name.'$/', $file)) {
-				// store current number of this page
-				$this->i = ($key + 1);
-				// return match
-				return $file;
-			}
-		}
-		return false;
+		$matches = Helpers::list_files($dir, '/^\d+?\.'.$name.'$/', true);
+		return (!empty($name) && !empty($matches)) ? $matches[0] : false;
 	}
 	
 	function get_assets($regex = '/.*/') {
 		// get containing directory by stripping the content file path
-		$dir = preg_replace('/\/[^\/]+$/', '', $this->content_file);
+		$dir = $this->path;
 		// store a list of all image files
 		$files = Helpers::list_files($dir, $regex);
 		// remove any thumbnails from the array
@@ -290,28 +304,57 @@ Class Page {
 		return $files;
 	}
 	
+	function get_thumb() {
+		$thumbs = Helpers::list_files($this->path, '/thumb\.(gif|jpg|png|jpeg)/i');
+		return (!empty($thumbs)) ? $this->path.'/'.$thumbs[0]  : '';
+	}
+	
+	function is_current() {
+		// Check if the url of this page matches the REQUEST_URI
+		return preg_match('/'.preg_replace('/\//', '\/', $this->url).'\/?$/', $_SERVER['REQUEST_URI']);
+	}
+	
 	function get_template_file($default_template) {
-		// check folder exists, if not, return 404
-		if(!$this->name_unclean) return false;
 		// find the name of the text file
-		preg_match('/\/([^\/]+?)\.txt/', $this->content_file, $template_name);
+		$page_type = $this->get_page_type();
+
+		// check folder exists, if not, return 404
+		if(!$page_type) return false;
+
 		// if template exists, return it
-		if(!empty($template_name) && file_exists('../templates/'.$template_name[1].'.html')) return '../templates/'.$template_name[1].'.html';
+		if(file_exists('../templates/'.$page_type.'.html')) return '../templates/'.$page_type.'.html';
 		// return content.html as default template (if it exists)
 		elseif(file_exists('../templates/'.$default_template.'.html')) return '../templates/'.$default_template.'.html';
 		else return false;
 	}
+	
+	function construct_link_path() {
+		if ($this->get_page_type() == 'index') return '';
+		$depth = sizeof(explode('/',$this->url));
+		return str_repeat("../", $depth);
+	}
+	
+	function get_path() {
+		$path = '../content';
+		// Split the categories and recursively unclean the categories into folder names
+		$categories = explode('/', $this->parent_url);
+		foreach($categories as $c) {
+			$path .= (!empty($c)) ? '/'.$this->unclean_name($c,$path) : '';
+		}
+		$path .= '/'.$this->unclean_name($this->name,$path);
+		return $path;
+	}
+
+	function get_page_type() {
+		$txts = Helpers::list_files($this->path, '/\.txt$/');
+		return (!empty($txts)) ? preg_replace('/\.txt/', '', $txts[0]) : false;
+	}
 
 	function get_content_file() {
-		// check folder exists
-		if($this->name_unclean && file_exists($this->content_path.$this->name_unclean)) {
-			// look for a .txt file
-			$txts = Helpers::list_files($this->content_path.$this->name_unclean, '/\.txt$/');
-			// if $txts contains a result, return it
-			if(!empty($txts)) return $this->content_path.$this->name_unclean.'/'.$txts[0];
-		}
-		// return if we didnt find anything
-		return $this->content_path.$this->name_unclean.'/none';
+		// look for a .txt file
+		$file = $this->path.'/'.$this->get_page_type().'.txt';
+		if (file_exists($file)) return $file;
+		else return $this->path.'/none';
 	}
 	
 	function get_public_file() {
@@ -319,37 +362,32 @@ Class Page {
 		if(file_exists('../public/'.$this->name.'.html')) return '../public/'.$this->name.'.html';
 		else return false;
 	}
-	
+
 	function get_sibling_pages() {
-		// if current page is a MockPageInCategory, escape this function (to prevent infinite loop)
-		if(get_class($this) == 'MockPageInCategory') return array(array(), array());
-		// loop through each unclean name looking for a match
-		foreach($this->unclean_names as $key => $name) {
-			// if match found...
-			if($name == $this->name_unclean) {
-				// store the names of the next/previous pages
-				$previous_name = ($key >= 1) ? $this->unclean_names[$key-1] : $this->unclean_names[(count($this->unclean_names)-1)];
-				$next_name = ($key + 1 < count($this->unclean_names)) ? $this->unclean_names[$key+1] : $this->unclean_names[0];
-				//store the urls of the next/previous pages
-				$previous = array('/@url/' => '../'.$this->clean_name($previous_name));
-				$next = array('/@url/' => '../'.$this->clean_name($next_name));
-				// create MockPageInCategory objects so we can access the variables of the pages
-				$previous_page = new MockPageInCategory($this->category, $previous_name);
-				$next_page = new MockPageInCategory($this->category, $next_name);
-				 
-				$c = new ContentParser;
-				return array(
-					array_merge($previous, $c->parse($previous_page)),
-					array_merge($next, $c->parse($next_page)),
-				);
-				// kill loop
-				break;
-			}
-		}
+		$total = count($this->siblings);
+		$i = $this->position;
+				
+		// Don't display links if there are no other pages
+		if ($total <= 1) return;
+
+		// store the names of the next/previous pages
+		$prev_name = $this->clean_name($this->siblings[ ($i == 0) ? $total-1 : $i-1 ]);
+		$next_name = $this->clean_name($this->siblings[ ($i+1) % $total] );
 		
-		return array(array(), array());
-	}
-	
+		//store the urls of the next/previous pages
+		$prev = array('/@url/' => '../'.$prev_name);
+		$next = array('/@url/' => '../'.$next_name);
+		
+		// create MockPageInCategory objects so we can access the variables of the pages
+		$prev_page = new MockPageInCategory($this->parent_url.'/'.$prev_name);
+		$next_page = new MockPageInCategory($this->parent_url.'/'.$next_name);
+				 
+		$c = new ContentParser;
+		return array(
+			array_merge($prev, $c->parse($prev_page)),
+			array_merge($next, $c->parse($next_page)),
+		);	
+	}	
 }
 
 Class Category extends Page {
@@ -361,22 +399,10 @@ Class PageInCategory extends Page {
 }
 
 Class MockPageInCategory extends PageInCategory {
-	
-	function __construct($category, $folder_name) {
-		$this->category_unclean = $this->unclean_name($category, '../content/');
-		$this->content_path = '../content/'.$this->category_unclean.'/';
-		$this->name_unclean = $this->unclean_name(preg_replace('/^\d+?\./', '', $folder_name), '../content/'.$this->category_unclean);
-		
-		$this->unclean_names = Helpers::list_files($this->content_path, '/.*/', true);
-		$this->content_file = $this->get_content_file();
-		
-		$this->image_files = $this->get_assets('/\.(gif|jpg|png|jpeg)/i');
-		$this->video_files = $this->get_assets('/\.(mov|mp4)/i');
-		$this->html_files = $this->get_assets('/\.(html|htm)/i');
-		$this->swf_files = $this->get_assets('/\.swf/i');
-		$this->link_path = $this->construct_link_path();
+	function get_sibling_pages() {
+		// escape this function (to prevent infinite loop)
+		return array(array(), array());
 	}
-	
 }
 
 Class ContentParser {
@@ -446,7 +472,7 @@ Class ContentParser {
 	}
 	
 	function create_replacement_rules($text) {
-		
+				
 		// push additional useful values to the replacement pairs
 		$replacement_pairs = array(
 			'/@Images_Count/' => count($this->page->image_files),
@@ -455,10 +481,12 @@ Class ContentParser {
 			'/@Swfs_Count/' => count($this->page->swf_files),
 			'/@Media_Count/' => count($this->page->image_files) + count($this->page->video_files) + count($this->page->html_files) + count($this->page->swf_files),
 			
-			'/@Pages_Count/' => count($this->page->unclean_names),
-			'/@Page_Number/' => $this->page->i,
+			'/@Pages_Count/' => count($this->page->siblings),
+			'/@Page_Number/' => $this->page->position + 1,
 			'/@Year/' => date('Y'),
 			'/@Site_Root\/?/' =>  $this->page->link_path,
+
+			'/@Debug/' => $this->page->debug(),
 			'/@Previous_Page/' => Partial::render($this->page, null, '../templates/partials/previous-page.html', 'PreviousPage'),
 			'/@Next_Page/' => Partial::render($this->page, null, '../templates/partials/next-page.html', 'NextPage')
 		);
@@ -467,7 +495,7 @@ Class ContentParser {
 			// look for a partial file matching the categories name, otherwise fall back to using the category partial
 			$partial_file = file_exists('../templates/partials/'.$this->page->name.'.html') ? '../templates/partials/'.$this->page->name.'.html' : '../templates/partials/category-list.html';
 			// create a dynamic category list variable
-			$replacement_pairs['/@Category_List/'] = Partial::render($this->page, $this->page->name_unclean, $partial_file, 'CategoryList');
+			$replacement_pairs['/@Category_List/'] = Partial::render($this->page, $this->page->path, $partial_file, 'CategoryList');
 		}
 		
 		// pull out each key/value pair from the content file
@@ -569,11 +597,6 @@ Class Partial {
 	
 	var $page;
 	var $partial_file;
-	
-	static function check_thumb($dir, $file) {
-		$thumbs = Helpers::list_files($dir.'/'.$file, '/thumb\.(gif|jpg|png|jpeg)/i');
-		return (!empty($thumbs)) ? $dir.'/'.$file.'/'.$thumbs[0] : '';
-	}
 
 	static function get_partial($partial_file) {
 		$partial = (file_exists($partial_file)) ? file_get_contents($partial_file) : '<p>! '.$partial_file.' not found.</p>';
@@ -594,6 +617,7 @@ Class Partial {
 		// if a partial is passed through, then we want to process any loops inside it
 		$html .= call_user_func_array($partial_type.'::parse_loop', array($page, '../content/'.$dir, $wrappers[1]));
 		// add closing wrapper
+		
 		$html .= $wrappers[2];
 		return $html;
 		
@@ -605,17 +629,23 @@ Class CategoryList extends Partial {
 	
 	static function parse_loop($page, $dir, $loop_html) {
 		$files = Helpers::list_files($dir, '/^\d+?\./', true);
-		$path = $page->link_path.preg_replace(array('/\.\.\/content\//', '/^\d+?\./'), '', $dir);
 		$html = '';
+
 		foreach($files as $key => $file) {
 			// for each page within this category...
-			$vars = array(
-				'/@url/' => $path.'/'.preg_replace('/^\d+?\./', '', $file).'/',
-				'/@thumb/' => $page->link_path.'content/'.self::check_thumb($dir, $file)
-			);
-			// create a MockPageInCategory to give us access to all the variables inside this PageInCategory
+			
+			$url = Helpers::path_to_url($dir.'/'.$file);
+			
 			$c = new ContentParser;
-			$category_page = new MockPageInCategory(preg_replace('/\.\.\/content\//', '', $dir), $file);
+			$category_page = new MockPageInCategory($url);
+						
+			$vars = array(
+				'/@url/' => $page->link_path.$url,
+				'/@thumb/' => ($category_page->get_thumb()) ? preg_replace('/^\.\.\//','',$page->link_path).$category_page->get_thumb() : '',
+				'/@css_class/' => $category_page->is_current() ? 'active' : '',
+			);
+
+			// create a MockPageInCategory to give us access to all the variables inside this PageInCategory
 			$vars = array_merge($vars, $c->parse($category_page));
 			$html .= preg_replace(array_keys($vars), array_values($vars), $loop_html);
 		}
@@ -639,6 +669,7 @@ Class Navigation extends Partial {
 				$replacements = array(
 					'/@url/' => $path.$file_name_clean.'/',
 					'/@name/' => ucfirst(preg_replace('/-/', ' ', $file_name_clean)),
+					'/@css_class/' => preg_match('/'.preg_replace('/\//', '\/', $file_name_clean).'/', $_SERVER['REQUEST_URI']) ? 'active' : ''
 				);
 				
 				$html .= preg_replace(array_keys($replacements), array_values($replacements), $loop_html);
@@ -677,8 +708,8 @@ Class Pages extends Partial {
 Class Images extends Partial {
 
 	static function parse_loop($page, $dir, $loop_html) {
-		$dir = preg_replace('/\/[^\/]+$/', '', $page->content_file);
-		$dir = $page->link_path.preg_replace('/\.\.\//', '', $dir);
+		$dir = $page->link_path.preg_replace('/\.\.\//', '', $page->path);
+
 		$html = '';
 		
 		$files = $page->image_files;
@@ -694,8 +725,8 @@ Class Images extends Partial {
 Class Video extends Partial {
 	
 	static function parse_loop($page, $dir, $loop_html) {
-		$dir = preg_replace('/\/[^\/]+$/', '', $page->content_file);
-		$dir = $page->link_path.preg_replace('/\.\.\//', '', $dir);
+		$dir = $page->link_path.preg_replace('/\.\.\//', '', $page->path);
+
 		$html = '';
 		
 		$files = $page->video_files;
@@ -722,8 +753,8 @@ Class Video extends Partial {
 Class Swf extends Partial {
 
 	static function parse_loop($page, $dir, $loop_html) {
-		$dir = preg_replace('/\/[^\/]+$/', '', $page->content_file);
-		$dir = $page->link_path.preg_replace('/\.\.\//', '', $dir);
+		$dir = $page->link_path.preg_replace('/\.\.\//', '', $page->path);
+
 		$html = '';
 		
 		$files = $page->swf_files;
@@ -749,7 +780,7 @@ Class Swf extends Partial {
 Class Html extends Partial {
 
 	static function parse_loop($page, $dir, $loop_html) {
-		$dir = preg_replace('/\/[^\/]+$/', '', $page->content_file);
+		$dir = $page->link_path.preg_replace('/\.\.\//', '', $page->path);
 		$html = '';
 		
 		$files = $page->html_files;
