@@ -117,7 +117,7 @@ Class Cache {
 	}
 	
 	function collate_files($dir) {
-		if(!isset($files_modified)) $files_modified = '';
+		$files_modified = '';
 		foreach(Helpers::list_files($dir, '/.*/') as $file) {
 			$files_modified .= $file.':'.filemtime($dir.'/'.$file);
 			if(is_dir($dir.'/'.$file)) $this->collate_files($dir.'/'.$file);
@@ -170,7 +170,7 @@ Class Renderer {
 	
 	function render() {
 		// if page doesn't contain a content file or have a matching template file, redirect to it or return 404
-		if(!$this->page || !$this->page->template_file) {
+		if(!get_class($this->page) || !$this->page->template_file) {
 			// if a static html page with a name matching the current route exists in the public folder, serve it 
 			if($this->page->public_file) echo file_get_contents($this->page->public_file);
 			// serve 404
@@ -233,7 +233,7 @@ Class Page {
 	
 	function __construct($name = 'index', $category = '') {
 		$this->category = $category;
-		$this->category_unclean = $this->unclean_name($this->category,'../content/');
+		$this->category_unclean = ($category == '') ? false : $this->unclean_name($this->category,'../content/');
 		$this->content_path = ($category == '') ? '../content/' : '../content/'.$this->category_unclean.'/';
 		
 		$this->name = $name;
