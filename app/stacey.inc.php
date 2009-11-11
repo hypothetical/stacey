@@ -160,8 +160,8 @@ Class Renderer {
 		else 
 			$this->page = new Page($url);
 		
-		// render a 404 if we cannot find a folder path matching the given url
-		if (!file_exists($this->page->content_file)) $this->render_404();
+		// render a 404 if we cannot find a matching folder path matching the given url
+		if (!$this->page->path) $this->render_404();
 		else { $this->render(); }
 	}
 	
